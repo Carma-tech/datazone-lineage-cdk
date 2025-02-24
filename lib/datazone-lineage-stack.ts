@@ -4,8 +4,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as path from 'path';
-import { CustomResource } from 'aws-cdk-lib';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 
 export class DatazoneLineageStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -18,6 +20,33 @@ export class DatazoneLineageStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
+
+    // // Function to deploy folders to S3
+    // const deployFolderToS3 = (folderName: string, destinationPrefix: string) => {
+    //   new s3deploy.BucketDeployment(this, `Deploy${folderName}`, {
+    //     sources: [s3deploy.Source.asset(path.join(__dirname, `../data/${folderName}`), { exclude: ['*.pyc'] })],
+    //     destinationBucket: bucket,
+    //     destinationKeyPrefix: destinationPrefix,
+    //   });
+    // };
+
+    // // Deploy multiple folders
+    // const foldersToDeploy = [
+    //   { folderName: 'inventory', destinationPrefix: 'inventory' },
+    //   { folderName: 'lib', destinationPrefix: 'lib' },
+    //   { folderName: 'scripts', destinationPrefix: 'scripts' },
+    // ];
+
+    // foldersToDeploy.forEach((folder) => {
+    //   deployFolderToS3(folder.folderName, folder.destinationPrefix);
+    // });
+
+    const lambdaLayer = new lambda.LayerVersion(this, 'CfnResponseLayer', {
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/layer')),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_13, lambda.Runtime.PYTHON_3_12, lambda.Runtime.PYTHON_3_11],
+      // compatibleArchitectures: [lambda.Architecture.X86_64],
+      description: 'Layer for Custom Resource Response',
+    })
 
     // Lambda Execution Role for Copying Files to S3
     const lambdaExecutionRole = new iam.Role(this, 'LambdaExecutionRole', {
@@ -51,16 +80,54 @@ export class DatazoneLineageStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       timeout: cdk.Duration.seconds(60),
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      layers: [lambdaLayer],
     });
 
-    // Custom Resource to Copy Files to S3
-    const s3CopyResource = new CustomResource(this, 'S3Copy2', {
-      serviceToken: copyToS3Lambda.functionArn,
-      properties: {
-        S3BucketName2: bucket.bucketName,
+    // Custom resource to copy files to S3
+    const s3CustomResource = new cr.AwsCustomResource(this, 'S3Copy2', {
+      onCreate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: copyToS3Lambda.functionName,
+          InvocationType: 'RequestResponse',
+          Payload: JSON.stringify({
+            RequestType: 'Create',
+            ResourceProperties: {
+              S3BucketName2: bucket.bucketName,
+            },
+          }),
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('S3Copy2'),
       },
+      onUpdate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: copyToS3Lambda.functionName,
+          InvocationType: 'RequestResponse',
+          Payload: JSON.stringify({
+            RequestType: 'Update',
+            ResourceProperties: {
+              S3BucketName2: bucket.bucketName,
+              // Optionally include a property that changes on every deployment,
+              // e.g., a timestamp, to force an update.
+              UpdateTime: new Date().toISOString(),
+            },
+          }),
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('S3Copy2'),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['lambda:InvokeFunction'],
+          resources: [copyToS3Lambda.functionArn],
+        }),
+      ]),
     });
 
+  
     // Lambda Execution Role for S3 Directory Creation
     const awsLambdaExecutionRole = new iam.Role(this, 'AWSLambdaExecutionRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -95,16 +162,52 @@ export class DatazoneLineageStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(360),
       runtime: lambda.Runtime.PYTHON_3_12,
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      layers: [lambdaLayer]
     });
 
-    // Custom Resource to Create S3 Directories
-    const s3CustomResource = new CustomResource(this, 'S3CustomResource', {
-      serviceToken: s3DirLambda.functionArn,
-      properties: {
-        the_bucket: bucket.bucketName,
-        dirs_to_create: ['scripts', 'lib'],
+    // Custom resource to create S3 directories
+    const createDirsResource = new cr.AwsCustomResource(this, 'S3CustomResource', {
+      onCreate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: s3DirLambda.functionName,
+          InvocationType: 'RequestResponse',
+          Payload: JSON.stringify({
+            RequestType: 'Create',
+            ResourceProperties: {
+              the_bucket: bucket.bucketName, // Pass the bucket name
+              dirs_to_create: ['inventory', 'scripts', 'lib'], // Pass the directories to create
+            },
+          }),
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('S3CustomResource'),
       },
+      onUpdate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: s3DirLambda.functionName,
+          InvocationType: 'RequestResponse',
+          Payload: JSON.stringify({
+            RequestType: 'Update',
+            ResourceProperties: {
+              the_bucket: bucket.bucketName, // Pass the bucket name
+              dirs_to_create: ['inventory', 'scripts', 'lib'], // Pass the directories to create
+            },
+          }),
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('S3CustomResource'),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['lambda:InvokeFunction'],
+          resources: [s3DirLambda.functionArn],
+        }),
+      ]),
     });
+  
 
     // Glue Database
     const database = new glue.CfnDatabase(this, 'CFNDatabaseWS', {
@@ -135,15 +238,15 @@ export class DatazoneLineageStack extends cdk.Stack {
       },
     });
 
-    // Glue Crawler
+    // Glue Crawler (Fixed: Use bucket.bucketName instead of bucket.bucketArn)
     const crawler = new glue.CfnCrawler(this, 'AWSomeRetailCrawler', {
       name: 'AWSomeRetailCrawler',
       role: glueRole.roleArn,
       databaseName: database.ref,
       targets: {
         s3Targets: [
-          { path: `${bucket.bucketArn}/inventory/` },
-          { path: `${bucket.bucketArn}/inventory_insights/` },
+          { path: `s3://${bucket.bucketName}/inventory/` },
+          { path: `s3://${bucket.bucketName}/inventory_insights/` },
         ],
       },
       schemaChangePolicy: {
@@ -163,8 +266,8 @@ export class DatazoneLineageStack extends cdk.Stack {
       },
       defaultArguments: {
         '--conf': 'spark.extraListeners=io.openlineage.spark.agent.OpenLineageSparkListener \
-        --conf spark.openlineage.transport.type=console \
-        --conf spark.openlineage.facets.custom_environment_variables=[AWS_DEFAULT_REGION;GLUE_VERSION;GLUE_COMMAND_CRITERIA;GLUE_PYTHON_VERSION;]',
+          --conf spark.openlineage.transport.type=console \
+          --conf spark.openlineage.facets.custom_environment_variables=[AWS_DEFAULT_REGION;GLUE_VERSION;GLUE_COMMAND_CRITERIA;GLUE_PYTHON_VERSION;]',
         '--user-jars-first': 'true',
         '--enable-glue-datacatalog': 'true',
         '--job-bookmark-option': 'job-bookmark-disable',
@@ -174,9 +277,10 @@ export class DatazoneLineageStack extends cdk.Stack {
       maxCapacity: 2.0,
       timeout: 60,
     });
+    
 
     // Ensure S3 directories are created before copying files
-    s3CopyResource.node.addDependency(s3CustomResource);
+    s3CustomResource.node.addDependency(createDirsResource);
 
     // Outputs
     new cdk.CfnOutput(this, 'BucketName', {
@@ -195,5 +299,6 @@ export class DatazoneLineageStack extends cdk.Stack {
       value: glueJob.name!,
       description: 'AWS Glue Job Name',
     });
+
   }
 }

@@ -26,7 +26,7 @@ def copy_to_s3(url, bucket, destination):
 
 def lambda_handler(event, context):
     print('Received event: ' + json.dumps(event, indent=2))
-    if event['RequestType'] == 'Create':
+    if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
         properties = event['ResourceProperties']
         urls = [
             ("https://aws-blogs-artifacts-public.s3.amazonaws.com/BDB-4447/data/inventory.csv", "inventory/"),
