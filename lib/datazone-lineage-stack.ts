@@ -44,9 +44,9 @@ export class DatazoneLineageStack extends cdk.Stack {
     const lambdaLayer = new lambda.LayerVersion(this, 'CfnResponseLayer', {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/layer')),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_13, lambda.Runtime.PYTHON_3_12, lambda.Runtime.PYTHON_3_11],
-      // compatibleArchitectures: [lambda.Architecture.X86_64],
+      compatibleArchitectures: [lambda.Architecture.X86_64, lambda.Architecture.ARM_64],
       description: 'Layer for Custom Resource Response',
-    })
+    });
 
     // Lambda Execution Role for Copying Files to S3
     const lambdaExecutionRole = new iam.Role(this, 'LambdaExecutionRole', {
@@ -84,6 +84,8 @@ export class DatazoneLineageStack extends cdk.Stack {
       layers: [lambdaLayer],
     });
 
+    copyToS3Lambda.grantInvoke(new iam.ServicePrincipal('lambda.amazonaws.com'));
+
     // Custom resource to copy files to S3
     const s3CustomResource = new cr.AwsCustomResource(this, 'S3Copy2', {
       onCreate: {
@@ -119,12 +121,16 @@ export class DatazoneLineageStack extends cdk.Stack {
         },
         physicalResourceId: cr.PhysicalResourceId.of('S3Copy2'),
       },
+      // policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+      //   resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
+      // }),
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           actions: ['lambda:InvokeFunction'],
           resources: [copyToS3Lambda.functionArn],
         }),
       ]),
+      
     });
 
   
@@ -166,6 +172,8 @@ export class DatazoneLineageStack extends cdk.Stack {
       layers: [lambdaLayer]
     });
 
+    s3DirLambda.grantInvoke(new iam.ServicePrincipal('lambda.amazonaws.com'));
+
     // Custom resource to create S3 directories
     const createDirsResource = new cr.AwsCustomResource(this, 'S3CustomResource', {
       onCreate: {
@@ -200,12 +208,16 @@ export class DatazoneLineageStack extends cdk.Stack {
         },
         physicalResourceId: cr.PhysicalResourceId.of('S3CustomResource'),
       },
+      // policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+      //   resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
+      // }),
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           actions: ['lambda:InvokeFunction'],
           resources: [s3DirLambda.functionArn],
         }),
       ]),
+      
     });
   
 

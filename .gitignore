@@ -10,3 +10,4 @@ cdk.out
 .DS_Store
 .vscode/
 **/*.DS_Store
+__pycache__/
