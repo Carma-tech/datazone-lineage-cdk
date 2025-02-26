@@ -8,6 +8,10 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as path from 'path';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as redshift from 'aws-cdk-lib/aws-redshift';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import { CfnCluster } from 'aws-cdk-lib/aws-redshift';
+
 
 export class DatazoneLineageStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -20,6 +24,12 @@ export class DatazoneLineageStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
+
+    bucket.addToResourcePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetBucketAcl'],
+      principals: [new iam.ServicePrincipal('redshift.amazonaws.com')],
+      resources: [bucket.bucketArn],
+    }));    
 
     // // Function to deploy folders to S3
     // const deployFolderToS3 = (folderName: string, destinationPrefix: string) => {
@@ -130,10 +140,10 @@ export class DatazoneLineageStack extends cdk.Stack {
           resources: [copyToS3Lambda.functionArn],
         }),
       ]),
-      
+
     });
 
-  
+
     // Lambda Execution Role for S3 Directory Creation
     const awsLambdaExecutionRole = new iam.Role(this, 'AWSLambdaExecutionRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -217,9 +227,9 @@ export class DatazoneLineageStack extends cdk.Stack {
           resources: [s3DirLambda.functionArn],
         }),
       ]),
-      
+
     });
-  
+
 
     // Glue Database
     const database = new glue.CfnDatabase(this, 'CFNDatabaseWS', {
@@ -233,7 +243,10 @@ export class DatazoneLineageStack extends cdk.Stack {
     // Glue Role
     const glueRole = new iam.Role(this, 'CFNGlueRole', {
       roleName: 'DZBlogRole',
-      assumedBy: new iam.ServicePrincipal('glue.amazonaws.com'),
+      assumedBy: new iam.CompositePrincipal(
+        new iam.ServicePrincipal('glue.amazonaws.com'),
+        new iam.ServicePrincipal('datazone.amazonaws.com')
+      ),
       path: '/',
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSGlueServiceRole'),
@@ -289,10 +302,76 @@ export class DatazoneLineageStack extends cdk.Stack {
       maxCapacity: 2.0,
       timeout: 60,
     });
-    
 
     // Ensure S3 directories are created before copying files
     s3CustomResource.node.addDependency(createDirsResource);
+
+    /////// Configure Redshift Cluster ///////
+    // import custom vpc
+    const vpc = ec2.Vpc.fromLookup(this, 'CustomVpc', {
+      vpcId: 'vpc-02860dfe7bce18819' // Update this if not available or create new one
+    });
+
+    // Security Group for Redshift
+    const redshiftSg = new ec2.SecurityGroup(this, 'RedshiftClusterSG', {
+      vpc,
+      description: 'Allow inbound Redshift (TCP 5439)',
+      allowAllOutbound: true,
+    });
+    redshiftSg.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(5439),
+      'Allow Redshift inbound'
+    );
+
+    // Subnet Group for Redshift
+    const privateSubnets = vpc.selectSubnets({
+      subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+    }).subnetIds;
+
+    // Create a Redshift subnet group
+    const subnetGroup = new redshift.CfnClusterSubnetGroup(this, 'RedshiftSubnetGroup', {
+      description: 'Subnet group for Redshift cluster',
+      subnetIds: privateSubnets,
+      // optional: tags
+      tags: [
+        {
+          key: 'Name',
+          value: 'RedshiftSubnetGroup',
+        },
+      ],
+    });
+
+    // Create a single-node Redshift cluster
+    // WARNING: The "masterPassword" is hardcoded for demonstration. Use Secrets Manager in production.
+    const redshiftCluster = new redshift.CfnCluster(this, 'MyRedshiftCluster', {
+      clusterType: 'single-node',
+      nodeType: 'dc2.large',
+      dbName: 'awsome_retail_db',
+      masterUsername: 'admin',
+      masterUserPassword: 'MySecretPass123',
+      clusterIdentifier: 'my-redshift-cluster',
+
+      // Networking
+      clusterSubnetGroupName: subnetGroup.ref,
+      vpcSecurityGroupIds: [redshiftSg.securityGroupId],
+      port: 5439,
+      publiclyAccessible: true,  // For demonstration. Typically false in production.
+
+      automatedSnapshotRetentionPeriod: 1,
+      allowVersionUpgrade: true,
+      // loggingProperties: {
+      //   bucketName: bucket.bucketName,
+      //   s3KeyPrefix: 'redshift-logs',
+      // },
+      tags: [
+        {
+          key: 'Name',
+          value: 'DataZoneLineage',
+        },
+      ]
+
+    });
 
     // Outputs
     new cdk.CfnOutput(this, 'BucketName', {
@@ -310,6 +389,15 @@ export class DatazoneLineageStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'GlueJobName', {
       value: glueJob.name!,
       description: 'AWS Glue Job Name',
+    });
+
+    new cdk.CfnOutput(this, 'RedshiftHostname', {
+      value: redshiftCluster.attrEndpointAddress,
+      description: 'Hostname for the Redshift cluster endpoint',
+    });
+    new cdk.CfnOutput(this, 'RedshiftPort', {
+      value: redshiftCluster.attrEndpointPort,
+      description: 'Port for the Redshift cluster endpoint',
     });
 
   }

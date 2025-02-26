@@ -55,6 +55,26 @@ This will provision the necessary resources, including:
 
 ---
 
+## Prepare a Shell Script for Post-Deployment
+
+The `automate-glue-job-lineage.sh` script will:
+
+1. Start the Glue crawler and wait until it finishes.
+2. Start the Glue job and wait until it finishes.
+3. Install Python dependencies (if needed) and run the lineage scripts (extract_glue_crawler_lineage.py and extract_glue_spark_lineage.py).
+
+Make sure to grant execute permission:
+
+```bash
+chmod +x scripts/automate-glue-job-lineage.sh
+```
+
+Run the Post-Deploy script (assuming you’re in the same directory and want to pass your DataZone domain ID):
+
+```bash
+./scripts/automate-glue-job-lineage.sh dzd_6wbtsa8ioowucn
+```
+<!-- 
 ## Capturing Lineage from AWS Glue Tables
 
 After deploying the CDK stack, follow these steps to capture lineage metadata.
@@ -190,4 +210,4 @@ cdk destroy
 - [AWS CDK Documentation](https://docs.aws.amazon.com/cdk/v2/guide/home.html)
 
 ---
-
+ -->

@@ -11,3 +11,5 @@ cdk.out
 .vscode/
 **/*.DS_Store
 __pycache__/
+test.txt
+task.ipynb
